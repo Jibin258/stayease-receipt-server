@@ -2,7 +2,7 @@ const express = require("express");
 const xlsx = require("xlsx");
 const fs = require("fs");
 const path = require("path");
-
+const Receipt_details = require('../models/receipt-format');
 const receiptDetailsRouter = express.Router();
 
 const headers = [
@@ -21,42 +21,57 @@ const headers = [
   "Receipt Date",
 ];
 
-const parentFolder = path.join(__dirname, "..");
-const filePath = path.join(parentFolder, "/public/assets/receipts.xlsx");
+receiptDetailsRouter.get("/export-receipts", async (req, res) => {
+  try {
+    const receiptData = await Receipt_details.find({});
 
-receiptDetailsRouter.get("/export-excel", (req, res) => {
-  if (fs.existsSync(filePath)) {
-    res.download(filePath, "receipts.xlsx", (err) => {
-      if (err) {
-        console.error("Error sending file:", err);
-        res.status(500).json({ error: "Error sending the file" });
-      }
-    });
-  } else {
-    res.status(404).json({ error: "File not found" });
+    if (receiptData.length === 0) {
+      return res.status(404).json({ message: "No receipts found" });
+    }
+
+    const excelData = receiptData.map((item) => [
+      item.receiptNo,
+      item.guestName,
+      item.guestPhone,
+      item.guestEmail,
+      item.bookingId,
+      item.checkInDate,
+      item.roomType,
+      item.numberOfGuests,
+      item.totalAmount,
+      item.paymentType,
+      item.paymentMode,
+      item.paymentStatus,
+      item.receiptDate,
+    ]);
+
+    const workbook = xlsx.utils.book_new();
+    const worksheet = xlsx.utils.aoa_to_sheet([headers, ...excelData]);
+
+    xlsx.utils.book_append_sheet(workbook, worksheet, "Receipts");
+
+    const fileBuffer = xlsx.write(workbook, { bookType: "xlsx", type: "buffer" });
+
+    const fileName = "receipts.xlsx";
+
+    res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+    res.send(fileBuffer);
+  } catch (error) {
+    console.error("Error exporting receipts:", error);
+    res.status(500).json({ message: "Error exporting receipts" });
   }
 });
 
-receiptDetailsRouter.get("/receipt-excel", (req, res) => {
+receiptDetailsRouter.get("/receipt-excel", async (req, res) => {
   try {
-    if (fs.existsSync(filePath)) {
-      const workbook = xlsx.readFile(filePath);
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const data = xlsx.utils.sheet_to_json(worksheet);
+    const lastReceiptData = await Receipt_details.findOne().sort({ receiptNo: -1 });
 
-      if (data.length > 0) {
-        const lastReceiptData = data[data.length - 1];
-        res.json(lastReceiptData);
-      } else {
-        res.status(404).json({ message: "No data found in the Excel file" });
-      }
-    } else {
-      res.status(404).json({ message: "File not found" });
-    }
+    res.json(lastReceiptData);
   } catch (error) {
-    console.error("Error reading the Excel file:", error);
-    res.status(500).json({ message: "Error reading the Excel file" });
+    console.error("Error reading the receipt data:", error);
+    res.status(500).json({ message: "Error reading the receipt data" });
   }
 });
 
@@ -91,63 +106,43 @@ receiptDetailsRouter.post("/receipt-form", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  let workbook;
-  let receiptNo = "00001";
-
   try {
-    if (fs.existsSync(filePath)) {
-      workbook = xlsx.readFile(filePath);
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const data = xlsx.utils.sheet_to_json(worksheet);
+    const lastReceipt = await Receipt_details.findOne().sort({ receiptNo: -1 });
+    const receiptNo = lastReceipt
+      ? (parseInt(lastReceipt.receiptNo, 10) + 1).toString().padStart(5, "0")
+      : "00001";
 
-      const lastReceiptNo = data.map((item) => item["Receipt No."]).at(-1);
-      receiptNo = (parseInt(lastReceiptNo, 10) + 1).toString().padStart(5, "0");
-    } else {
-      workbook = xlsx.utils.book_new();
-      const worksheet = xlsx.utils.aoa_to_sheet([headers]);
-      xlsx.utils.book_append_sheet(workbook, worksheet, "Receipts");
-    }
+    const formattedCheckInDate = new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: 'short',
+    }).format(new Date(checkInDate)).replace(' ', '-');
+
+    const currentDate = new Date();
+    const formattedDate = `${String(currentDate.getDate()).padStart(2, "0")}-${String(currentDate.getMonth() + 1).padStart(2, "0")}-${currentDate.getFullYear()}`;
+
+    const receipt_details = new Receipt_details({
+      receiptNo: receiptNo,
+      guestName: guestName,
+      guestPhone: guestPhone,
+      guestEmail: guestEmail,
+      bookingId: bookingId,
+      checkInDate: formattedCheckInDate,
+      roomType: roomType,
+      numberOfGuests: numberOfGuests,
+      totalAmount: totalAmount,
+      paymentType: paymentType,
+      paymentMode: paymentMode,
+      paymentStatus: paymentStatus,
+      receiptDate: formattedDate,
+    });
+
+    await receipt_details.save();
+    res.status(200).json({ message: "Data saved successfully" });
   } catch (error) {
-    console.error("Error reading Excel file:", error);
-    return res.status(500).json({ error: "Error reading Excel file" });
-  }
-
-  const date = new Date(checkInDate);
-  const rentalMonth = `${date.toLocaleString("default", { month: "short" })}-${date.getFullYear()}`;
-  const currentDate = new Date();
-  const formattedDate = `${String(currentDate.getDate()).padStart(2, "0")}-${String(currentDate.getMonth() + 1).padStart(2, "0")}-${currentDate.getFullYear()}`;
-
-  const newRow = [
-    receiptNo,
-    guestName,
-    guestPhone,
-    guestEmail,
-    bookingId,
-    rentalMonth,
-    roomType,
-    numberOfGuests,
-    totalAmount,
-    paymentType,
-    paymentMode,
-    paymentStatus,
-    formattedDate,
-  ];
-
-  try {
-    const worksheet =
-      workbook.Sheets["Receipts"] || xlsx.utils.aoa_to_sheet([headers]);
-    const rows = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
-    rows.push(newRow);
-    const updatedWorksheet = xlsx.utils.aoa_to_sheet(rows);
-    workbook.Sheets["Receipts"] = updatedWorksheet;
-
-    xlsx.writeFile(workbook, filePath);
-    res.status(200).json({ message: "Data added successfully" });
-  } catch (error) {
-    console.error("Error saving the Excel file:", error);
-    res.status(500).json({ error: "Error saving the Excel file" });
+    console.error("Error saving receipt details:", error);
+    res.status(500).json({ error: "Failed to save receipt details" });
   }
 });
+
 
 module.exports = receiptDetailsRouter;
